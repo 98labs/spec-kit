@@ -486,7 +486,7 @@ def init_git_repo(project_path: Path, quiet: bool = False) -> Tuple[bool, Option
         os.chdir(original_cwd)
 
 def download_template_from_github(ai_assistant: str, download_dir: Path, *, script_type: str = "sh", verbose: bool = True, show_progress: bool = True, client: httpx.Client = None, debug: bool = False, github_token: str = None) -> Tuple[Path, dict]:
-    repo_owner = "github"
+    repo_owner = "98labs"
     repo_name = "spec-kit"
     if client is None:
         client = httpx.Client(verify=ssl_context)
@@ -741,6 +741,113 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
     return project_path
 
 
+def copy_local_template(project_path: Path, ai_assistant: str, script_type: str, is_current_dir: bool = False, *, verbose: bool = True, tracker: StepTracker | None = None) -> Path:
+    """Copy templates from local fork directory instead of downloading from GitHub.
+    Returns project_path. Uses tracker if provided.
+    """
+    # Find the root of the spec-kit repository (where this file is located)
+    spec_kit_root = Path(__file__).parent.parent.parent
+
+    if tracker:
+        tracker.start("local-copy", "copying from local fork")
+    elif verbose:
+        console.print("[cyan]Copying templates from local fork...[/cyan]")
+
+    try:
+        # Define source directories in the fork
+        source_dirs = {
+            "scripts": spec_kit_root / "scripts",
+            "templates": spec_kit_root / "templates",
+            "memory": spec_kit_root / "memory",
+        }
+
+        # Verify source directories exist
+        missing_dirs = [name for name, path in source_dirs.items() if not path.exists()]
+        if missing_dirs:
+            error_msg = f"Missing local directories: {', '.join(missing_dirs)}"
+            if tracker:
+                tracker.error("local-copy", error_msg)
+            raise FileNotFoundError(error_msg)
+
+        # Create project directory if needed
+        if not is_current_dir:
+            project_path.mkdir(parents=True, exist_ok=True)
+
+        # Create .specify directory structure
+        specify_dir = project_path / ".specify"
+        specify_dir.mkdir(exist_ok=True)
+
+        # Copy scripts
+        dest_scripts = specify_dir / "scripts"
+        if dest_scripts.exists():
+            shutil.rmtree(dest_scripts)
+
+        # Determine which script variant to copy
+        scripts_source = source_dirs["scripts"] / script_type if script_type == "ps" else source_dirs["scripts"] / "bash"
+
+        if not scripts_source.exists():
+            # Fallback to bash if ps doesn't exist
+            scripts_source = source_dirs["scripts"] / "bash"
+
+        shutil.copytree(scripts_source, dest_scripts)
+        if tracker:
+            tracker.add("copy-scripts", "Copy scripts")
+            tracker.complete("copy-scripts", f"from {scripts_source.name}")
+        elif verbose:
+            console.print(f"[green]✓[/green] Copied scripts from {scripts_source}")
+
+        # Copy templates
+        dest_templates = specify_dir / "templates"
+        if dest_templates.exists():
+            shutil.rmtree(dest_templates)
+
+        # Copy agent-specific command templates
+        agent_commands_source = source_dirs["templates"] / "commands"
+        agent_folder = AGENT_CONFIG[ai_assistant]["folder"].rstrip("/")
+        dest_agent_commands = project_path / agent_folder / "commands"
+        dest_agent_commands.mkdir(parents=True, exist_ok=True)
+
+        if agent_commands_source.exists():
+            for cmd_file in agent_commands_source.glob("*.md"):
+                shutil.copy2(cmd_file, dest_agent_commands / cmd_file.name)
+
+        shutil.copytree(source_dirs["templates"], dest_templates)
+        if tracker:
+            tracker.add("copy-templates", "Copy templates")
+            tracker.complete("copy-templates", f"to {ai_assistant}")
+        elif verbose:
+            console.print(f"[green]✓[/green] Copied templates for {ai_assistant}")
+
+        # Copy memory (constitution, etc.)
+        dest_memory = specify_dir / "memory"
+        if dest_memory.exists():
+            shutil.rmtree(dest_memory)
+        shutil.copytree(source_dirs["memory"], dest_memory)
+        if tracker:
+            tracker.add("copy-memory", "Copy memory files")
+            tracker.complete("copy-memory")
+        elif verbose:
+            console.print("[green]✓[/green] Copied memory files")
+
+        if tracker:
+            tracker.complete("local-copy", f"from {spec_kit_root.name}")
+        elif verbose:
+            console.print(f"[green]✓[/green] Local template copy complete")
+
+    except Exception as e:
+        if tracker:
+            tracker.error("local-copy", str(e))
+        else:
+            if verbose:
+                console.print(f"[red]Error copying local templates:[/red] {e}")
+
+        if not is_current_dir and project_path.exists():
+            shutil.rmtree(project_path)
+        raise typer.Exit(1)
+
+    return project_path
+
+
 def ensure_executable_scripts(project_path: Path, tracker: StepTracker | None = None) -> None:
     """Ensure POSIX .sh scripts under .specify/scripts (recursively) have execute bits (no-op on Windows)."""
     if os.name == "nt":
@@ -797,6 +904,7 @@ def init(
     skip_tls: bool = typer.Option(False, "--skip-tls", help="Skip SSL/TLS verification (not recommended)"),
     debug: bool = typer.Option(False, "--debug", help="Show verbose diagnostic output for network and extraction failures"),
     github_token: str = typer.Option(None, "--github-token", help="GitHub token to use for API requests (or set GH_TOKEN or GITHUB_TOKEN environment variable)"),
+    local: bool = typer.Option(False, "--local", help="Use local template files from the fork instead of downloading from GitHub (for development/testing)"),
 ):
     """
     Initialize a new Specify project from the latest template.
@@ -944,18 +1052,32 @@ def init(
     tracker.complete("ai-select", f"{selected_ai}")
     tracker.add("script-select", "Select script type")
     tracker.complete("script-select", selected_script)
-    for key, label in [
-        ("fetch", "Fetch latest release"),
-        ("download", "Download template"),
-        ("extract", "Extract template"),
-        ("zip-list", "Archive contents"),
-        ("extracted-summary", "Extraction summary"),
-        ("chmod", "Ensure scripts executable"),
-        ("cleanup", "Cleanup"),
-        ("git", "Initialize git repository"),
-        ("final", "Finalize")
-    ]:
-        tracker.add(key, label)
+
+    # Different tracker labels for local vs remote mode
+    if local:
+        for key, label in [
+            ("local-copy", "Copy local templates"),
+            ("copy-scripts", "Copy scripts"),
+            ("copy-templates", "Copy templates"),
+            ("copy-memory", "Copy memory files"),
+            ("chmod", "Ensure scripts executable"),
+            ("git", "Initialize git repository"),
+            ("final", "Finalize")
+        ]:
+            tracker.add(key, label)
+    else:
+        for key, label in [
+            ("fetch", "Fetch latest release"),
+            ("download", "Download template"),
+            ("extract", "Extract template"),
+            ("zip-list", "Archive contents"),
+            ("extracted-summary", "Extraction summary"),
+            ("chmod", "Ensure scripts executable"),
+            ("cleanup", "Cleanup"),
+            ("git", "Initialize git repository"),
+            ("final", "Finalize")
+        ]:
+            tracker.add(key, label)
 
     # Track git error message outside Live context so it persists
     git_error_message = None
@@ -963,11 +1085,14 @@ def init(
     with Live(tracker.render(), console=console, refresh_per_second=8, transient=True) as live:
         tracker.attach_refresh(lambda: live.update(tracker.render()))
         try:
-            verify = not skip_tls
-            local_ssl_context = ssl_context if verify else False
-            local_client = httpx.Client(verify=local_ssl_context)
-
-            download_and_extract_template(project_path, selected_ai, selected_script, here, verbose=False, tracker=tracker, client=local_client, debug=debug, github_token=github_token)
+            # Use local templates if --local flag is set, otherwise download from GitHub
+            if local:
+                copy_local_template(project_path, selected_ai, selected_script, here, verbose=False, tracker=tracker)
+            else:
+                verify = not skip_tls
+                local_ssl_context = ssl_context if verify else False
+                local_client = httpx.Client(verify=local_ssl_context)
+                download_and_extract_template(project_path, selected_ai, selected_script, here, verbose=False, tracker=tracker, client=local_client, debug=debug, github_token=github_token)
 
             ensure_executable_scripts(project_path, tracker=tracker)
 

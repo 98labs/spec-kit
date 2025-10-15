@@ -3,18 +3,25 @@
 set -e
 
 JSON_MODE=false
+CUSTOM_BRANCH_NAME=""
 ARGS=()
-for arg in "$@"; do
-    case "$arg" in
+i=0
+while [ $i -lt $# ]; do
+    case "${!i}" in
         --json) JSON_MODE=true ;;
-        --help|-h) echo "Usage: $0 [--json] <feature_description>"; exit 0 ;;
-        *) ARGS+=("$arg") ;;
+        --branch-name)
+            ((i++))
+            CUSTOM_BRANCH_NAME="${!i}"
+            ;;
+        --help|-h) echo "Usage: $0 [--json] [--branch-name NAME] <feature_description>"; exit 0 ;;
+        *) ARGS+=("${!i}") ;;
     esac
+    ((i++))
 done
 
 FEATURE_DESCRIPTION="${ARGS[*]}"
 if [ -z "$FEATURE_DESCRIPTION" ]; then
-    echo "Usage: $0 [--json] <feature_description>" >&2
+    echo "Usage: $0 [--json] [--branch-name NAME] <feature_description>" >&2
     exit 1
 fi
 
@@ -67,9 +74,26 @@ fi
 NEXT=$((HIGHEST + 1))
 FEATURE_NUM=$(printf "%03d" "$NEXT")
 
-BRANCH_NAME=$(echo "$FEATURE_DESCRIPTION" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
-WORDS=$(echo "$BRANCH_NAME" | tr '-' '\n' | grep -v '^$' | head -3 | tr '\n' '-' | sed 's/-$//')
-BRANCH_NAME="${FEATURE_NUM}-${WORDS}"
+# Use custom branch name if provided via --branch-name flag
+if [ -n "$CUSTOM_BRANCH_NAME" ]; then
+    BRANCH_NAME="$CUSTOM_BRANCH_NAME"
+else
+    DEFAULT_BRANCH_NAME=$(echo "$FEATURE_DESCRIPTION" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+    WORDS=$(echo "$DEFAULT_BRANCH_NAME" | tr '-' '\n' | grep -v '^$' | head -3 | tr '\n' '-' | sed 's/-$//')
+    DEFAULT_BRANCH_NAME="${FEATURE_NUM}-${WORDS}"
+
+    # Prompt for branch name if not in JSON mode
+    if $JSON_MODE; then
+        BRANCH_NAME="$DEFAULT_BRANCH_NAME"
+    else
+        read -p "Enter branch name (default: $DEFAULT_BRANCH_NAME): " USER_BRANCH_NAME
+        if [ -z "$USER_BRANCH_NAME" ]; then
+            BRANCH_NAME="$DEFAULT_BRANCH_NAME"
+        else
+            BRANCH_NAME="$USER_BRANCH_NAME"
+        fi
+    fi
+fi
 
 if [ "$HAS_GIT" = true ]; then
     git checkout -b "$BRANCH_NAME"
@@ -95,3 +119,4 @@ else
     echo "FEATURE_NUM: $FEATURE_NUM"
     echo "SPECIFY_FEATURE environment variable set to: $BRANCH_NAME"
 fi
+
