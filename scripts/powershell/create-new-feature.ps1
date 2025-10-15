@@ -3,13 +3,14 @@
 [CmdletBinding()]
 param(
     [switch]$Json,
+    [string]$BranchName,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$FeatureDescription
 )
 $ErrorActionPreference = 'Stop'
 
 if (-not $FeatureDescription -or $FeatureDescription.Count -eq 0) {
-    Write-Error "Usage: ./create-new-feature.ps1 [-Json] <feature description>"
+    Write-Error "Usage: ./create-new-feature.ps1 [-Json] [-BranchName <name>] <feature description>"
     exit 1
 }
 $featureDesc = ($FeatureDescription -join ' ').Trim()
@@ -72,9 +73,26 @@ if (Test-Path $specsDir) {
 $next = $highest + 1
 $featureNum = ('{0:000}' -f $next)
 
-$branchName = $featureDesc.ToLower() -replace '[^a-z0-9]', '-' -replace '-{2,}', '-' -replace '^-', '' -replace '-$', ''
-$words = ($branchName -split '-') | Where-Object { $_ } | Select-Object -First 3
-$branchName = "$featureNum-$([string]::Join('-', $words))"
+# Use custom branch name if provided via -BranchName parameter
+if ($BranchName) {
+    $branchName = $BranchName
+} else {
+    $defaultBranchName = $featureDesc.ToLower() -replace '[^a-z0-9]', '-' -replace '-{2,}', '-' -replace '^-', '' -replace '-$', ''
+    $words = ($defaultBranchName -split '-') | Where-Object { $_ } | Select-Object -First 3
+    $defaultBranchName = "$featureNum-$([string]::Join('-', $words))"
+
+    # Prompt for branch name if not in JSON mode
+    if ($Json) {
+        $branchName = $defaultBranchName
+    } else {
+        $userInput = Read-Host "Enter branch name (default: $defaultBranchName)"
+        if ([string]::IsNullOrWhiteSpace($userInput)) {
+            $branchName = $defaultBranchName
+        } else {
+            $branchName = $userInput
+        }
+    }
+}
 
 if ($hasGit) {
     try {
