@@ -783,10 +783,13 @@ def copy_local_template(project_path: Path, ai_assistant: str, script_type: str,
             shutil.rmtree(dest_scripts)
 
         # Determine which script variant to copy
-        scripts_source = source_dirs["scripts"] / script_type if script_type == "ps" else source_dirs["scripts"] / "bash"
+        if script_type == "ps":
+            scripts_source = source_dirs["scripts"] / "powershell"
+        else:
+            scripts_source = source_dirs["scripts"] / "bash"
 
         if not scripts_source.exists():
-            # Fallback to bash if ps doesn't exist
+            # Fallback to bash if powershell doesn't exist
             scripts_source = source_dirs["scripts"] / "bash"
 
         shutil.copytree(scripts_source, dest_scripts)
